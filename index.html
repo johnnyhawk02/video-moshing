@@ -1,0 +1,1897 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Datamosh Video Generator</title>
+    <meta name="description" content="Client-side datamoshed video generator combining video motion vectors, injected still images, and synchronized audio using HTML5 Canvas and FFmpeg WebAssembly." />
+    <meta property="og:title" content="Datamosh Video Generator" />
+    <meta property="og:description" content="Client-side datamoshed video generator combining video motion vectors, injected still images, and synchronized audio using HTML5 Canvas and FFmpeg WebAssembly." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Google Fonts: Inter font family for clean typographic hierarchy -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- FFmpeg.wasm UMD Core & Utilities (Single-Thread / Fallback Mode) -->
+    <!-- This setup does not require SharedArrayBuffer or COOP/COEP headers -->
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+    <style>
+      :root {
+        --bg-color: #121214;
+        --surface-color: #1a1a1e;
+        --surface-border: #26262c;
+        --surface-hover: #222228;
+        --text-primary: #f3f4f6;
+        --text-secondary: #9ca3af;
+        --text-muted: #6b7280;
+        --accent-color: #00ffaa;
+        --accent-glow: rgba(0, 255, 170, 0.25);
+        --accent-dark: #00b377;
+        --danger-color: #ef4444;
+        --radius-sm: 8px;
+        --radius-md: 12px;
+        --radius-lg: 16px;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: var(--bg-color);
+        color: var(--text-primary);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.5;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 32px 20px 60px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Container */
+      .app-container {
+        width: 100%;
+        max-width: 980px;
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+      }
+
+      /* Header */
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .header-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+
+      .logo-group {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .logo-badge {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        padding: 4px 10px;
+        background: rgba(0, 255, 170, 0.12);
+        color: var(--accent-color);
+        border: 1px solid rgba(0, 255, 170, 0.3);
+        border-radius: 9999px;
+      }
+
+      h1 {
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--text-primary);
+      }
+
+      .subtitle {
+        color: var(--text-secondary);
+        font-size: 14px;
+        max-width: 680px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        background: var(--surface-color);
+        border: 1px solid var(--surface-border);
+        padding: 6px 14px;
+        border-radius: 9999px;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--accent-color);
+        box-shadow: 0 0 8px var(--accent-color);
+        animation: pulse 2s infinite ease-in-out;
+      }
+
+      .demo-action-btn {
+        background: transparent;
+        border: 1px solid var(--surface-border);
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 500;
+        padding: 7px 14px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s ease;
+      }
+
+      .demo-action-btn:hover {
+        background: var(--surface-hover);
+        color: var(--text-primary);
+        border-color: #3b3b44;
+      }
+
+      /* Media Uploads Grid */
+      .media-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+
+      @media (max-width: 820px) {
+        .media-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .drop-card {
+        background: var(--surface-color);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius-md);
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        transition: border-color 0.2s, background-color 0.2s;
+        position: relative;
+      }
+
+      .drop-card:hover {
+        border-color: #363640;
+      }
+
+      .drop-card.dragover {
+        border-color: var(--accent-color);
+        background-color: rgba(0, 255, 170, 0.04);
+      }
+
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .card-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .card-badge {
+        font-size: 11px;
+        color: var(--text-muted);
+        background: rgba(255, 255, 255, 0.05);
+        padding: 2px 8px;
+        border-radius: 9999px;
+      }
+
+      .drop-zone {
+        border: 1px dashed #363640;
+        border-radius: var(--radius-sm);
+        padding: 24px 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        gap: 8px;
+        cursor: pointer;
+        background: rgba(0, 0, 0, 0.2);
+        transition: all 0.2s ease;
+        min-height: 120px;
+      }
+
+      .drop-zone:hover {
+        border-color: var(--accent-color);
+        background: rgba(0, 255, 170, 0.03);
+      }
+
+      .drop-zone svg {
+        color: var(--text-muted);
+        transition: color 0.2s ease;
+      }
+
+      .drop-zone:hover svg {
+        color: var(--accent-color);
+      }
+
+      .drop-prompt {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .drop-subtext {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      /* Preview Elements */
+      .media-preview-container {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .media-info-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--text-secondary);
+        background: rgba(0, 0, 0, 0.3);
+        padding: 8px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--surface-border);
+      }
+
+      .remove-btn {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        padding: 4px;
+        border-radius: 4px;
+      }
+
+      .remove-btn:hover {
+        color: var(--danger-color);
+        background: rgba(239, 68, 68, 0.1);
+      }
+
+      .thumbnails-strip {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+
+      .thumbnail-item {
+        width: 48px;
+        height: 48px;
+        border-radius: 6px;
+        object-fit: cover;
+        border: 1px solid var(--surface-border);
+        flex-shrink: 0;
+      }
+
+      /* Control Dashboard Section */
+      .controls-card {
+        background: var(--surface-color);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius-md);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .control-row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .control-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .control-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .control-value {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent-color);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .control-desc {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      /* Custom Range Slider */
+      input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        background: #2b2b34;
+        border-radius: 9999px;
+        outline: none;
+        transition: background 0.2s;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--accent-color);
+        cursor: pointer;
+        box-shadow: 0 0 10px var(--accent-glow);
+        border: 2px solid #121214;
+        transition: transform 0.15s ease;
+      }
+
+      input[type="range"]::-webkit-slider-thumb:hover {
+        transform: scale(1.15);
+      }
+
+      /* Options Pill Group */
+      .options-group {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+
+      .option-btn {
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--surface-border);
+        color: var(--text-secondary);
+        padding: 10px 14px;
+        border-radius: var(--radius-sm);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.2s ease;
+      }
+
+      .option-btn:hover {
+        border-color: #3f3f4a;
+        color: var(--text-primary);
+      }
+
+      .option-btn.active {
+        border-color: var(--accent-color);
+        color: var(--accent-color);
+        background: rgba(0, 255, 170, 0.06);
+      }
+
+      /* Primary Action Button */
+      .action-row {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .primary-btn {
+        background: var(--accent-color);
+        color: #0b0b0e;
+        border: none;
+        font-size: 15px;
+        font-weight: 600;
+        padding: 15px 28px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        transition: all 0.2s ease;
+        box-shadow: 0 4px 14px var(--accent-glow);
+      }
+
+      .primary-btn:hover:not(:disabled) {
+        background: #1affb0;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(0, 255, 170, 0.35);
+      }
+
+      .primary-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      /* Progress Bar & Processing Monitor */
+      .processing-panel {
+        display: none;
+        background: var(--surface-color);
+        border: 1px solid var(--surface-border);
+        border-radius: var(--radius-md);
+        padding: 24px;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+      }
+
+      .progress-phase {
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+
+      .progress-percentage {
+        font-weight: 600;
+        color: var(--accent-color);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .progress-track {
+        width: 100%;
+        height: 5px;
+        background: #22222a;
+        border-radius: 9999px;
+        overflow: hidden;
+      }
+
+      .progress-bar {
+        width: 0%;
+        height: 100%;
+        background: var(--accent-color);
+        border-radius: 9999px;
+        transition: width 0.1s linear;
+        box-shadow: 0 0 8px var(--accent-glow);
+      }
+
+      .preview-viewport-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        background: #000;
+        padding: 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--surface-border);
+      }
+
+      #live-mosh-canvas {
+        max-width: 100%;
+        max-height: 240px;
+        border-radius: 4px;
+        object-fit: contain;
+      }
+
+      .canvas-caption {
+        font-size: 11px;
+        color: var(--text-muted);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      /* Output Section (Hidden by default, fades in) */
+      .output-panel {
+        display: none;
+        opacity: 0;
+        transform: translateY(12px);
+        transition: opacity 0.5s ease, transform 0.5s ease;
+        background: var(--surface-color);
+        border: 1px solid #363640;
+        border-radius: var(--radius-md);
+        padding: 28px;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .output-panel.visible {
+        display: flex;
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .output-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .output-title {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .video-wrapper {
+        position: relative;
+        background: #000;
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        border: 1px solid var(--surface-border);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      video#output-video {
+        width: 100%;
+        max-height: 480px;
+        background: #000;
+        display: block;
+      }
+
+      .output-specs {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+
+      @media (max-width: 680px) {
+        .output-specs {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      .spec-item {
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--surface-border);
+        padding: 10px 14px;
+        border-radius: var(--radius-sm);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .spec-label {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .spec-value {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .output-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .download-btn {
+        flex: 1;
+        min-width: 200px;
+        background: var(--accent-color);
+        color: #0b0b0e;
+        border: none;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 12px 20px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        text-decoration: none;
+        transition: all 0.2s;
+        box-shadow: 0 4px 14px var(--accent-glow);
+      }
+
+      .download-btn:hover {
+        background: #1affb0;
+        transform: translateY(-1px);
+      }
+
+      .secondary-btn {
+        background: transparent;
+        border: 1px solid var(--surface-border);
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 500;
+        padding: 12px 18px;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+      }
+
+      .secondary-btn:hover {
+        background: var(--surface-hover);
+        color: var(--text-primary);
+        border-color: #3b3b44;
+      }
+
+      /* Hidden utility elements */
+      input[type="file"] {
+        display: none;
+      }
+
+      @keyframes pulse {
+        0%, 100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.6;
+          transform: scale(0.9);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Header -->
+      <header>
+        <div class="header-top">
+          <div class="logo-group">
+            <span class="logo-badge">WASM ENGINE</span>
+            <h1>Datamosh Video Generator</h1>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="btn-load-demo" class="demo-action-btn" type="button" title="Load synthetic demo video, images, and audio">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+              </svg>
+              Load Demo Pack
+            </button>
+            <div class="status-pill">
+              <div class="status-dot"></div>
+              <span id="wasm-status-text">Single-Thread Fallback Ready</span>
+            </div>
+          </div>
+        </div>
+        <p class="subtitle">
+          Injects still images as keyframes (I-frames) and forces subsequent video frames to P-frames.
+          The video's motion vectors blindly warp and smear the image pixels, with runtime matching your audio track.
+        </p>
+      </header>
+
+      <!-- Media Inputs Grid -->
+      <div class="media-grid">
+        <!-- 1. Video Input (Motion Source) -->
+        <div class="drop-card" id="video-card">
+          <div class="card-header">
+            <span class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>
+              </svg>
+              1. Video Motion Source
+            </span>
+            <span class="card-badge" id="video-badge">Required</span>
+          </div>
+
+          <div class="drop-zone" id="video-drop-zone">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="drop-prompt">Upload Video Clip</span>
+            <span class="drop-subtext">MP4, WebM, MOV (Loops if short)</span>
+          </div>
+          <input type="file" id="video-input" accept="video/mp4,video/webm,video/quicktime" />
+
+          <div class="media-preview-container" id="video-preview-row">
+            <div class="media-info-row">
+              <span id="video-filename" style="font-weight: 500; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 180px;">video.mp4</span>
+              <span id="video-meta-tag" style="color: var(--accent-color);">1280×720 • 4.2s</span>
+              <button class="remove-btn" id="btn-remove-video" title="Remove video">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Still Images Input (I-Frames) -->
+        <div class="drop-card" id="images-card">
+          <div class="card-header">
+            <span class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+              </svg>
+              2. Still Images (I-Frames)
+            </span>
+            <span class="card-badge" id="images-badge">0 Uploaded</span>
+          </div>
+
+          <div class="drop-zone" id="images-drop-zone">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="drop-prompt">Upload Still Images</span>
+            <span class="drop-subtext">JPG, PNG, WebP (Multiple allowed)</span>
+          </div>
+          <input type="file" id="images-input" accept="image/jpeg,image/png,image/webp" multiple />
+
+          <div class="media-preview-container" id="images-preview-row">
+            <div class="thumbnails-strip" id="images-thumbnail-strip"></div>
+            <div class="media-info-row" style="margin-top: 4px;">
+              <span id="images-summary-text">0 images loaded</span>
+              <button class="remove-btn" id="btn-clear-images" title="Clear images">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Audio Track Input (Timeline Master) -->
+        <div class="drop-card" id="audio-card">
+          <div class="card-header">
+            <span class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+              </svg>
+              3. Audio Track (Master)
+            </span>
+            <span class="card-badge" id="audio-badge">Duration Master</span>
+          </div>
+
+          <div class="drop-zone" id="audio-drop-zone">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="drop-prompt">Upload Audio File</span>
+            <span class="drop-subtext">MP3, WAV, M4A, OGG</span>
+          </div>
+          <input type="file" id="audio-input" accept="audio/*" />
+
+          <div class="media-preview-container" id="audio-preview-row">
+            <div class="media-info-row">
+              <span id="audio-filename" style="font-weight: 500; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 170px;">audio.mp3</span>
+              <span id="audio-meta-tag" style="color: var(--accent-color);">00:08.50 • 255 f</span>
+              <button class="remove-btn" id="btn-remove-audio" title="Remove audio">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+            <audio id="audio-player-preview" controls style="width: 100%; height: 32px; margin-top: 4px; border-radius: 4px;"></audio>
+          </div>
+        </div>
+      </div>
+
+      <!-- Moshing Settings Dashboard -->
+      <div class="controls-card">
+        <!-- Glitch Frequency Slider -->
+        <div class="control-row">
+          <div class="control-header">
+            <label class="control-label" for="glitch-slider">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/><circle cx="12" cy="12" r="3"/><circle cx="8" cy="6" r="3"/><circle cx="16" cy="18" r="3"/>
+              </svg>
+              Glitch Frequency
+            </label>
+            <span class="control-value" id="glitch-slider-val">35%</span>
+          </div>
+          <input type="range" id="glitch-slider" min="0" max="100" value="35" step="1" />
+          <span class="control-desc" id="glitch-slider-desc">
+            Injects a fresh still image keyframe roughly every ~45 frames (1.5s), allowing the intervening video motion vectors to smear and melt the pixels.
+          </span>
+        </div>
+
+        <!-- Processing Resolution Mode -->
+        <div class="control-row">
+          <div class="control-header">
+            <span class="control-label">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
+              </svg>
+              Processing Resolution
+            </span>
+            <span class="control-desc">Normalizes video and images with cover-fit scaling</span>
+          </div>
+          <div class="options-group">
+            <button type="button" class="option-btn active" data-res="720">Optimized 720p (Fast & Sharp)</button>
+            <button type="button" class="option-btn" data-res="native">Native Video Dimensions</button>
+            <button type="button" class="option-btn" data-res="480">Draft 480p (Ultra Fast)</button>
+          </div>
+        </div>
+
+        <!-- Smear Multiplier -->
+        <div class="control-row">
+          <div class="control-header">
+            <span class="control-label">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/>
+              </svg>
+              Motion Smear Intensity
+            </span>
+            <span class="control-desc">Macroblock displacement velocity scale</span>
+          </div>
+          <div class="options-group">
+            <button type="button" class="option-btn" data-smear="1.0">1.0x (Standard)</button>
+            <button type="button" class="option-btn active" data-smear="1.5">1.5x (Intense Smear)</button>
+            <button type="button" class="option-btn" data-smear="2.0">2.0x (Liquid Melt)</button>
+          </div>
+        </div>
+
+        <!-- Action Trigger -->
+        <div class="action-row">
+          <button type="button" class="primary-btn" id="btn-generate" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="6 3 20 12 6 21 6 3"/>
+            </svg>
+            <span id="btn-generate-text">Upload Video, Images & Audio to Start</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Processing Monitor & Progress Bar -->
+      <div class="processing-panel" id="processing-panel">
+        <div class="progress-meta">
+          <span class="progress-phase" id="progress-phase-label">Initializing FFmpeg.wasm engine...</span>
+          <span class="progress-percentage" id="progress-percentage-label">0%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+
+        <!-- Live Real-Time Canvas Viewport -->
+        <div class="preview-viewport-container">
+          <canvas id="live-mosh-canvas"></canvas>
+          <span class="canvas-caption" id="canvas-status-caption">Live Vector Moshing Stream</span>
+        </div>
+      </div>
+
+      <!-- Output Video Preview Panel (Fades in upon completion) -->
+      <div class="output-panel" id="output-panel">
+        <div class="output-header">
+          <div class="output-title">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-color)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            Datamoshed Video Ready
+          </div>
+          <span class="status-pill" style="color: var(--accent-color); border-color: rgba(0, 255, 170, 0.3);">
+            Runtime Matched to Audio
+          </span>
+        </div>
+
+        <div class="video-wrapper">
+          <video id="output-video" controls playsinline loop autoplay></video>
+        </div>
+
+        <div class="output-specs">
+          <div class="spec-item">
+            <span class="spec-label">Audio Duration</span>
+            <span class="spec-value" id="spec-duration">00:00.00</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Total Frames</span>
+            <span class="spec-value" id="spec-frames">0 @ 30 FPS</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Codec / Format</span>
+            <span class="spec-value">H.264 / AAC (MP4)</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">File Size</span>
+            <span class="spec-value" id="spec-filesize">0 MB</span>
+          </div>
+        </div>
+
+        <div class="output-actions">
+          <a class="download-btn" id="btn-download-video" download="datamoshed_video.mp4">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Download Datamoshed MP4
+          </a>
+          <button type="button" class="secondary-btn" id="btn-replay-preview">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 2 10 10-10 10V2z"/>
+            </svg>
+            Replay Preview
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Application Script -->
+    <script>
+      (function () {
+        'use strict';
+
+        // State Store
+        const state = {
+          videoFile: null,
+          videoElement: null,
+          videoDuration: 0,
+          videoWidth: 0,
+          videoHeight: 0,
+          stillImages: [], // Array of HTMLImageElements
+          audioFile: null,
+          audioDuration: 0,
+          audioBuffer: null,
+          fps: 30,
+          glitchFrequency: 35, // 0 to 100
+          resolutionMode: '720', // '720', 'native', '480'
+          smearMultiplier: 1.5,
+          isProcessing: false,
+          ffmpeg: null,
+          outputBlobUrl: null
+        };
+
+        // DOM Element References
+        const videoDropZone = document.getElementById('video-drop-zone');
+        const videoInput = document.getElementById('video-input');
+        const videoPreviewRow = document.getElementById('video-preview-row');
+        const videoFilename = document.getElementById('video-filename');
+        const videoMetaTag = document.getElementById('video-meta-tag');
+        const btnRemoveVideo = document.getElementById('btn-remove-video');
+        const videoBadge = document.getElementById('video-badge');
+
+        const imagesDropZone = document.getElementById('images-drop-zone');
+        const imagesInput = document.getElementById('images-input');
+        const imagesPreviewRow = document.getElementById('images-preview-row');
+        const imagesThumbnailStrip = document.getElementById('images-thumbnail-strip');
+        const imagesSummaryText = document.getElementById('images-summary-text');
+        const btnClearImages = document.getElementById('btn-clear-images');
+        const imagesBadge = document.getElementById('images-badge');
+
+        const audioDropZone = document.getElementById('audio-drop-zone');
+        const audioInput = document.getElementById('audio-input');
+        const audioPreviewRow = document.getElementById('audio-preview-row');
+        const audioFilename = document.getElementById('audio-filename');
+        const audioMetaTag = document.getElementById('audio-meta-tag');
+        const audioPlayerPreview = document.getElementById('audio-player-preview');
+        const btnRemoveAudio = document.getElementById('btn-remove-audio');
+        const audioBadge = document.getElementById('audio-badge');
+
+        const glitchSlider = document.getElementById('glitch-slider');
+        const glitchSliderVal = document.getElementById('glitch-slider-val');
+        const glitchSliderDesc = document.getElementById('glitch-slider-desc');
+        const btnGenerate = document.getElementById('btn-generate');
+        const btnGenerateText = document.getElementById('btn-generate-text');
+        const btnLoadDemo = document.getElementById('btn-load-demo');
+
+        const processingPanel = document.getElementById('processing-panel');
+        const progressPhaseLabel = document.getElementById('progress-phase-label');
+        const progressPercentageLabel = document.getElementById('progress-percentage-label');
+        const progressBar = document.getElementById('progress-bar');
+        const liveMoshCanvas = document.getElementById('live-mosh-canvas');
+        const liveMoshCtx = liveMoshCanvas.getContext('2d');
+        const canvasStatusCaption = document.getElementById('canvas-status-caption');
+
+        const outputPanel = document.getElementById('output-panel');
+        const outputVideo = document.getElementById('output-video');
+        const specDuration = document.getElementById('spec-duration');
+        const specFrames = document.getElementById('spec-frames');
+        const specFilesize = document.getElementById('spec-filesize');
+        const btnDownloadVideo = document.getElementById('btn-download-video');
+        const btnReplayPreview = document.getElementById('btn-replay-preview');
+
+        // Helper: Format seconds to MM:SS.SS
+        function formatDuration(sec) {
+          const m = Math.floor(sec / 60);
+          const s = (sec % 60).toFixed(2);
+          return `${String(m).padStart(2, '0')}:${s.padStart(5, '0')}`;
+        }
+
+        // Helper: Format bytes
+        function formatBytes(bytes) {
+          if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+          return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        // Update Validation & Generate Button State
+        function updateUIState() {
+          const hasVideo = !!state.videoFile && state.videoDuration > 0;
+          const hasImages = state.stillImages.length > 0;
+          const hasAudio = !!state.audioFile && state.audioDuration > 0;
+
+          if (hasVideo && hasImages && hasAudio) {
+            const totalFrames = Math.ceil(state.audioDuration * state.fps);
+            btnGenerate.disabled = false;
+            btnGenerateText.textContent = `Generate Datamosh (${formatDuration(state.audioDuration)} • ${totalFrames} Frames)`;
+          } else {
+            btnGenerate.disabled = true;
+            const missing = [];
+            if (!hasVideo) missing.push('Video');
+            if (!hasImages) missing.push('Images');
+            if (!hasAudio) missing.push('Audio');
+            btnGenerateText.textContent = `Upload ${missing.join(', ')} to Start`;
+          }
+        }
+
+        // Setup Resolution and Smear Buttons
+        document.querySelectorAll('.options-group button[data-res]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.options-group button[data-res]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.resolutionMode = btn.getAttribute('data-res');
+          });
+        });
+
+        document.querySelectorAll('.options-group button[data-smear]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.options-group button[data-smear]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.smearMultiplier = parseFloat(btn.getAttribute('data-smear'));
+          });
+        });
+
+        // Glitch Frequency Slider Logic
+        glitchSlider.addEventListener('input', (e) => {
+          const val = parseInt(e.target.value, 10);
+          state.glitchFrequency = val;
+          glitchSliderVal.textContent = `${val}%`;
+
+          if (val === 0) {
+            glitchSliderDesc.textContent = 'Single initial keyframe injection at frame 0. Continuous melting & pixel drift throughout entire audio duration.';
+          } else if (val < 25) {
+            const frames = Math.round(90 * Math.pow(1 - val / 100, 1.5) + 30);
+            glitchSliderDesc.textContent = `Subtle glitch rhythm: Keyframe injected roughly every ~${frames} frames (~${(frames / state.fps).toFixed(1)}s), producing sustained motion vector melts.`;
+          } else if (val < 65) {
+            const frames = Math.round(70 * Math.pow(1 - val / 100, 1.5) + 15);
+            glitchSliderDesc.textContent = `Balanced rhythm: Fresh image keyframe roughly every ~${frames} frames (~${(frames / state.fps).toFixed(1)}s). Optimal balance of image cuts and smear.`;
+          } else {
+            const frames = Math.max(6, Math.round(30 * Math.pow(1 - val / 100, 1.5) + 5));
+            glitchSliderDesc.textContent = `Aggressive glitch bursts: Rapid keyframe injections every ~${frames} frames, creating chaotic glitch blooms.`;
+          }
+        });
+
+        // File Handlers: Video
+        async function loadVideoFile(file) {
+          state.videoFile = file;
+          const url = URL.createObjectURL(file);
+          const video = document.createElement('video');
+          video.src = url;
+          video.muted = true;
+          video.playsInline = true;
+          video.preload = 'auto';
+
+          await new Promise((resolve, reject) => {
+            video.onloadedmetadata = resolve;
+            video.onerror = reject;
+          });
+
+          state.videoElement = video;
+          state.videoDuration = video.duration;
+          state.videoWidth = video.videoWidth || 1280;
+          state.videoHeight = video.videoHeight || 720;
+
+          videoFilename.textContent = file.name || 'video_clip.mp4';
+          videoMetaTag.textContent = `${state.videoWidth}×${state.videoHeight} • ${state.videoDuration.toFixed(1)}s`;
+          videoBadge.textContent = 'Loaded';
+          videoDropZone.style.display = 'none';
+          videoPreviewRow.style.display = 'flex';
+          updateUIState();
+        }
+
+        btnRemoveVideo.addEventListener('click', () => {
+          if (state.videoElement && state.videoElement.src) {
+            URL.revokeObjectURL(state.videoElement.src);
+          }
+          state.videoFile = null;
+          state.videoElement = null;
+          state.videoDuration = 0;
+          videoInput.value = '';
+          videoDropZone.style.display = 'flex';
+          videoPreviewRow.style.display = 'none';
+          videoBadge.textContent = 'Required';
+          updateUIState();
+        });
+
+        // File Handlers: Images
+        async function loadImages(fileList) {
+          const files = Array.from(fileList).filter(f => f.type.startsWith('image/'));
+          if (!files.length) return;
+
+          for (const file of files) {
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+            await new Promise((resolve) => {
+              img.onload = resolve;
+              img.onerror = resolve;
+              img.src = url;
+            });
+            img.dataset.filename = file.name;
+            state.stillImages.push(img);
+          }
+
+          renderImageThumbnails();
+          updateUIState();
+        }
+
+        function renderImageThumbnails() {
+          imagesThumbnailStrip.innerHTML = '';
+          state.stillImages.forEach((img, idx) => {
+            const thumb = document.createElement('img');
+            thumb.className = 'thumbnail-item';
+            thumb.src = img.src;
+            thumb.title = `Keyframe #${idx + 1}: ${img.dataset.filename || 'image'}`;
+            imagesThumbnailStrip.appendChild(thumb);
+          });
+
+          const count = state.stillImages.length;
+          imagesBadge.textContent = `${count} ${count === 1 ? 'Image' : 'Images'}`;
+          imagesSummaryText.textContent = `${count} keyframe ${count === 1 ? 'image' : 'images'} ready`;
+
+          if (count > 0) {
+            imagesDropZone.style.display = 'none';
+            imagesPreviewRow.style.display = 'flex';
+          } else {
+            imagesDropZone.style.display = 'flex';
+            imagesPreviewRow.style.display = 'none';
+          }
+        }
+
+        btnClearImages.addEventListener('click', () => {
+          state.stillImages.forEach(img => URL.revokeObjectURL(img.src));
+          state.stillImages = [];
+          imagesInput.value = '';
+          renderImageThumbnails();
+          updateUIState();
+        });
+
+        // File Handlers: Audio
+        async function loadAudioFile(file) {
+          state.audioFile = file;
+          const url = URL.createObjectURL(file);
+          audioPlayerPreview.src = url;
+
+          // Decode duration using Web Audio API for fractional precision
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const buffer = await file.arrayBuffer();
+          const decoded = await audioCtx.decodeAudioData(buffer);
+          state.audioBuffer = decoded;
+          state.audioDuration = decoded.duration;
+
+          const totalFrames = Math.ceil(state.audioDuration * state.fps);
+          audioFilename.textContent = file.name || 'audio_track.mp3';
+          audioMetaTag.textContent = `${formatDuration(state.audioDuration)} • ${totalFrames} f`;
+          audioBadge.textContent = `${state.audioDuration.toFixed(1)}s Master`;
+
+          audioDropZone.style.display = 'none';
+          audioPreviewRow.style.display = 'flex';
+          updateUIState();
+        }
+
+        btnRemoveAudio.addEventListener('click', () => {
+          if (audioPlayerPreview.src) URL.revokeObjectURL(audioPlayerPreview.src);
+          state.audioFile = null;
+          state.audioBuffer = null;
+          state.audioDuration = 0;
+          audioInput.value = '';
+          audioDropZone.style.display = 'flex';
+          audioPreviewRow.style.display = 'none';
+          audioBadge.textContent = 'Duration Master';
+          updateUIState();
+        });
+
+        // Drag and Drop Listeners
+        function setupDropZone(dropZone, fileInput, onFileSelected) {
+          dropZone.addEventListener('click', () => fileInput.click());
+          fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length) {
+              onFileSelected(e.target.files);
+            }
+          });
+
+          ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dropZone.classList.add('dragover');
+            });
+          });
+
+          ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dropZone.classList.remove('dragover');
+            });
+          });
+
+          dropZone.addEventListener('drop', (e) => {
+            if (e.dataTransfer.files && e.dataTransfer.files.length) {
+              onFileSelected(e.dataTransfer.files);
+            }
+          });
+        }
+
+        setupDropZone(videoDropZone, videoInput, (files) => loadVideoFile(files[0]));
+        setupDropZone(imagesDropZone, imagesInput, (files) => loadImages(files));
+        setupDropZone(audioDropZone, audioInput, (files) => loadAudioFile(files[0]));
+
+        // DEMO MEDIA GENERATOR: 100% Client-Side Procedural Synthetic Pack
+        btnLoadDemo.addEventListener('click', async () => {
+          btnLoadDemo.disabled = true;
+          btnLoadDemo.textContent = 'Generating Demo Pack...';
+
+          try {
+            // 1. Synthetic Synthwave Audio (6 seconds)
+            const sampleRate = 44100;
+            const duration = 6.0;
+            const offlineCtx = new OfflineAudioContext(2, sampleRate * duration, sampleRate);
+
+            // Synth bass and lead arpeggio
+            const freqs = [110, 138.59, 164.81, 220, 164.81, 138.59];
+            for (let i = 0; i < 24; i++) {
+              const osc = offlineCtx.createOscillator();
+              const gain = offlineCtx.createGain();
+              osc.type = i % 2 === 0 ? 'sawtooth' : 'triangle';
+              osc.frequency.setValueAtTime(freqs[i % freqs.length], i * 0.25);
+
+              gain.gain.setValueAtTime(0.15, i * 0.25);
+              gain.gain.exponentialRampToValueAtTime(0.001, (i * 0.25) + 0.23);
+
+              osc.connect(gain);
+              gain.connect(offlineCtx.destination);
+              osc.start(i * 0.25);
+              osc.stop((i * 0.25) + 0.24);
+            }
+
+            const renderedAudio = await offlineCtx.startRendering();
+
+            // Convert AudioBuffer to WAV Blob
+            const wavBlob = audioBufferToWav(renderedAudio);
+            const audioFile = new File([wavBlob], 'demo_synthwave.wav', { type: 'audio/wav' });
+            await loadAudioFile(audioFile);
+
+            // 2. Three Distinct High-Contrast Artistic Keyframe Images
+            const images = [];
+            const imgWidth = 854;
+            const imgHeight = 480;
+
+            // Image A: Cyberpunk Neon Portrait / Horizon
+            const cA = document.createElement('canvas');
+            cA.width = imgWidth;
+            cA.height = imgHeight;
+            const ctxA = cA.getContext('2d');
+            const gradA = ctxA.createLinearGradient(0, 0, imgWidth, imgHeight);
+            gradA.addColorStop(0, '#ff0077');
+            gradA.addColorStop(0.5, '#7928ca');
+            gradA.addColorStop(1, '#00f0ff');
+            ctxA.fillStyle = gradA;
+            ctxA.fillRect(0, 0, imgWidth, imgHeight);
+
+            // Add geometric styling
+            ctxA.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctxA.lineWidth = 2;
+            for (let x = 0; x < imgWidth; x += 40) {
+              ctxA.beginPath();
+              ctxA.moveTo(x, 0);
+              ctxA.lineTo(x, imgHeight);
+              ctxA.stroke();
+            }
+            ctxA.fillStyle = '#ffffff';
+            ctxA.font = 'bold 44px Inter, sans-serif';
+            ctxA.fillText('KEYFRAME A // CYBER GLITCH', 60, imgHeight / 2);
+
+            const blobA = await new Promise(r => cA.toBlob(r, 'image/png'));
+            images.push(new File([blobA], 'keyframe_A.png', { type: 'image/png' }));
+
+            // Image B: Retro Sunset Wireframe
+            const cB = document.createElement('canvas');
+            cB.width = imgWidth;
+            cB.height = imgHeight;
+            const ctxB = cB.getContext('2d');
+            const gradB = ctxB.createRadialGradient(imgWidth / 2, imgHeight / 2, 40, imgWidth / 2, imgHeight / 2, imgWidth / 2);
+            gradB.addColorStop(0, '#ffaa00');
+            gradB.addColorStop(0.5, '#ff0055');
+            gradB.addColorStop(1, '#110022');
+            ctxB.fillStyle = gradB;
+            ctxB.fillRect(0, 0, imgWidth, imgHeight);
+
+            ctxB.fillStyle = '#ffffff';
+            ctxB.font = 'bold 44px Inter, sans-serif';
+            ctxB.fillText('KEYFRAME B // RETRO SUNSET', 60, imgHeight / 2);
+
+            const blobB = await new Promise(r => cB.toBlob(r, 'image/png'));
+            images.push(new File([blobB], 'keyframe_B.png', { type: 'image/png' }));
+
+            // Image C: Chrome Emerald Lotus
+            const cC = document.createElement('canvas');
+            cC.width = imgWidth;
+            cC.height = imgHeight;
+            const ctxC = cC.getContext('2d');
+            const gradC = ctxC.createLinearGradient(0, 0, 0, imgHeight);
+            gradC.addColorStop(0, '#00ffaa');
+            gradC.addColorStop(0.5, '#003322');
+            gradC.addColorStop(1, '#05050a');
+            ctxC.fillStyle = gradC;
+            ctxC.fillRect(0, 0, imgWidth, imgHeight);
+
+            ctxC.fillStyle = '#ffffff';
+            ctxC.font = 'bold 44px Inter, sans-serif';
+            ctxC.fillText('KEYFRAME C // LIQUID CHROME', 60, imgHeight / 2);
+
+            const blobC = await new Promise(r => cC.toBlob(r, 'image/png'));
+            images.push(new File([blobC], 'keyframe_C.png', { type: 'image/png' }));
+
+            await loadImages(images);
+
+            // 3. Synthetic Motion Video (3.5 seconds looping high-contrast moving shapes)
+            const videoBlob = await generateSyntheticMotionVideo(imgWidth, imgHeight, 3.5, 30);
+            const demoVideoFile = new File([videoBlob], 'demo_motion_source.webm', { type: 'video/webm' });
+            await loadVideoFile(demoVideoFile);
+
+            btnLoadDemo.innerHTML = `
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              Demo Pack Loaded
+            `;
+          } catch (err) {
+            console.error('Failed to generate demo pack:', err);
+            btnLoadDemo.textContent = 'Demo Error';
+          } finally {
+            btnLoadDemo.disabled = false;
+          }
+        });
+
+        // Helper: Convert AudioBuffer to WAV Blob
+        function audioBufferToWav(buffer) {
+          const numOfChan = buffer.numberOfChannels;
+          const length = buffer.length * numOfChan * 2 + 44;
+          const out = new DataView(new ArrayBuffer(length));
+          const channels = [];
+          let sample = 0;
+          let offset = 0;
+          let pos = 0;
+
+          function setUint16(data) { out.setUint16(pos, data, true); pos += 2; }
+          function setUint32(data) { out.setUint32(pos, data, true); pos += 4; }
+
+          setUint32(0x46464952); // "RIFF"
+          setUint32(length - 8);  // file length - 8
+          setUint32(0x45564157); // "WAVE"
+
+          setUint32(0x20746d66); // "fmt " chunk
+          setUint32(16);         // length = 16
+          setUint16(1);          // PCM
+          setUint16(numOfChan);
+          setUint32(buffer.sampleRate);
+          setUint32(buffer.sampleRate * 2 * numOfChan);
+          setUint16(numOfChan * 2);
+          setUint16(16);
+
+          setUint32(0x61746164); // "data" - chunk
+          setUint32(length - pos - 4);
+
+          for (let i = 0; i < buffer.numberOfChannels; i++) channels.push(buffer.getChannelData(i));
+
+          while (offset < buffer.length) {
+            for (let i = 0; i < numOfChan; i++) {
+              sample = Math.max(-1, Math.min(1, channels[i][offset]));
+              sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+              out.setInt16(pos, sample, true);
+              pos += 2;
+            }
+            offset++;
+          }
+          return new Blob([out.buffer], { type: 'audio/wav' });
+        }
+
+        // Helper: Generate Synthetic High-Contrast Motion Video (MediaRecorder)
+        async function generateSyntheticMotionVideo(width, height, durationSec, fps) {
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+
+          const stream = canvas.captureStream(fps);
+          const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+          const chunks = [];
+
+          recorder.ondataavailable = e => chunks.push(e.data);
+          const finishedPromise = new Promise(resolve => recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' })));
+
+          recorder.start();
+
+          const totalFrames = Math.round(durationSec * fps);
+          for (let f = 0; f < totalFrames; f++) {
+            const t = f / fps;
+            // Clear background
+            ctx.fillStyle = '#08080c';
+            ctx.fillRect(0, 0, width, height);
+
+            // Bouncing sphere with strong contrast (creates strong motion vectors)
+            const x = (Math.sin(t * 2.5) * 0.5 + 0.5) * (width - 160) + 80;
+            const y = (Math.cos(t * 3.2) * 0.5 + 0.5) * (height - 160) + 80;
+
+            const radGrad = ctx.createRadialGradient(x, y, 10, x, y, 90);
+            radGrad.addColorStop(0, '#ffffff');
+            radGrad.addColorStop(0.3, '#00ffaa');
+            radGrad.addColorStop(1, '#000000');
+            ctx.fillStyle = radGrad;
+            ctx.beginPath();
+            ctx.arc(x, y, 90, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Panning geometric bar
+            const barX = ((t * 240) % (width + 200)) - 100;
+            ctx.fillStyle = '#ff0055';
+            ctx.fillRect(barX, height * 0.35, 70, height * 0.3);
+
+            await new Promise(r => setTimeout(r, 1000 / fps));
+          }
+
+          recorder.stop();
+          return finishedPromise;
+        }
+
+        // FFmpeg Single-Threaded Core Initializer
+        async function getFFmpeg() {
+          if (state.ffmpeg) return state.ffmpeg;
+
+          if (typeof FFmpegWASM === 'undefined' || typeof FFmpegUtil === 'undefined') {
+            throw new Error("FFmpeg.wasm CDN scripts are still loading. Please wait a moment and retry.");
+          }
+
+          const { FFmpeg } = FFmpegWASM;
+          const { toBlobURL } = FFmpegUtil;
+          const ffmpeg = new FFmpeg();
+
+          ffmpeg.on('log', ({ message }) => {
+            // Optional: capture ffmpeg console logs
+          });
+
+          // Single-Thread fallback CDNs (no workerURL passed -> single thread mode without SharedArrayBuffer)
+          const cdns = [
+            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
+            'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd'
+          ];
+
+          let loaded = false;
+          let lastErr = null;
+
+          for (const baseURL of cdns) {
+            try {
+              progressPhaseLabel.textContent = `Loading FFmpeg WebAssembly Core (${baseURL.includes('unpkg') ? 'unpkg' : 'jsdelivr'})...`;
+              const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+              const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
+              await ffmpeg.load({ coreURL, wasmURL });
+              loaded = true;
+              break;
+            } catch (err) {
+              console.warn(`Failed loading core from ${baseURL}:`, err);
+              lastErr = err;
+            }
+          }
+
+          if (!loaded) {
+            throw new Error(`Failed to load FFmpeg.wasm: ${lastErr ? lastErr.message : 'Network error'}`);
+          }
+
+          state.ffmpeg = ffmpeg;
+          return ffmpeg;
+        }
+
+        // Datamosh Vector Engine
+        class DatamoshVectorEngine {
+          constructor(width, height, options = {}) {
+            this.width = width;
+            this.height = height;
+            this.blockSize = 16; // Standard 16x16 macroblock
+            this.searchRadius = 12;
+            this.smearMultiplier = options.smearMultiplier || 1.5;
+
+            // Working Canvases
+            this.moshCanvas = document.createElement('canvas');
+            this.moshCanvas.width = width;
+            this.moshCanvas.height = height;
+            this.moshCtx = this.moshCanvas.getContext('2d', { willReadFrequently: true });
+
+            this.videoCanvas = document.createElement('canvas');
+            this.videoCanvas.width = width;
+            this.videoCanvas.height = height;
+            this.videoCtx = this.videoCanvas.getContext('2d', { willReadFrequently: true });
+
+            this.prevLuma = null;
+            this.currLuma = new Uint8Array(width * height);
+          }
+
+          // Injects an image as a true Keyframe (I-Frame) with cover fit
+          injectKeyframe(imageElement) {
+            const targetRatio = this.width / this.height;
+            const imgRatio = imageElement.width / imageElement.height;
+            let sWidth = imageElement.width;
+            let sHeight = imageElement.height;
+            let sX = 0;
+            let sY = 0;
+
+            if (imgRatio > targetRatio) {
+              sWidth = imageElement.height * targetRatio;
+              sX = (imageElement.width - sWidth) / 2;
+            } else {
+              sHeight = imageElement.width / targetRatio;
+              sY = (imageElement.height - sHeight) / 2;
+            }
+
+            this.moshCtx.drawImage(imageElement, sX, sY, sWidth, sHeight, 0, 0, this.width, this.height);
+          }
+
+          // Processes video frame as a P-frame: applies motion vectors to smear previous mosh state
+          processPFrame(videoElement) {
+            this.videoCtx.drawImage(videoElement, 0, 0, this.width, this.height);
+            const videoImgData = this.videoCtx.getImageData(0, 0, this.width, this.height);
+            const videoPixels = videoImgData.data;
+
+            const len = this.width * this.height;
+            for (let i = 0, p = 0; i < len; i++, p += 4) {
+              // Fast integer luma: (77R + 150G + 29B) >> 8
+              this.currLuma[i] = (videoPixels[p] * 77 + videoPixels[p + 1] * 150 + videoPixels[p + 2] * 29) >> 8;
+            }
+
+            if (!this.prevLuma) {
+              this.prevLuma = new Uint8Array(this.currLuma);
+              return;
+            }
+
+            // Estimate motion vectors and warp mosh image
+            const moshImgData = this.moshCtx.getImageData(0, 0, this.width, this.height);
+            const prevBuffer = new Uint32Array(moshImgData.data.buffer);
+            const nextBuffer = new Uint32Array(prevBuffer);
+
+            const B = this.blockSize;
+            const w = this.width;
+            const h = this.height;
+            const r = this.searchRadius;
+            const mult = this.smearMultiplier;
+
+            for (let by = 0; by < h; by += B) {
+              const bH = Math.min(B, h - by);
+              for (let bx = 0; bx < w; bx += B) {
+                const bW = Math.min(B, w - bx);
+
+                // Zero-vector check
+                let sad0 = 0;
+                for (let dy = 0; dy < bH; dy += 4) {
+                  const rowOffset = (by + dy) * w + bx;
+                  for (let dx = 0; dx < bW; dx += 4) {
+                    sad0 += Math.abs(this.currLuma[rowOffset + dx] - this.prevLuma[rowOffset + dx]);
+                  }
+                }
+
+                if (sad0 < 50) continue; // Static block, no motion
+
+                // 2-Step Motion Search
+                let bestDx = 0;
+                let bestDy = 0;
+                let minSad = sad0;
+                const step = 3;
+
+                for (let sy = -r; sy <= r; sy += step) {
+                  const targetY = by + sy;
+                  if (targetY < 0 || targetY + bH > h) continue;
+
+                  for (let sx = -r; sx <= r; sx += step) {
+                    const targetX = bx + sx;
+                    if (targetX < 0 || targetX + bW > w) continue;
+
+                    let sad = 0;
+                    for (let dy = 0; dy < bH; dy += 4) {
+                      const currRow = (by + dy) * w + bx;
+                      const prevRow = (targetY + dy) * w + targetX;
+                      for (let dx = 0; dx < bW; dx += 4) {
+                        sad += Math.abs(this.currLuma[currRow + dx] - this.prevLuma[prevRow + dx]);
+                      }
+                    }
+
+                    if (sad < minSad) {
+                      minSad = sad;
+                      bestDx = sx;
+                      bestDy = sy;
+                    }
+                  }
+                }
+
+                // Displace pixels along motion vectors (The Datamosh Bloom)
+                if (bestDx !== 0 || bestDy !== 0) {
+                  const mvX = Math.round(bestDx * mult);
+                  const mvY = Math.round(bestDy * mult);
+
+                  const srcX = Math.max(0, Math.min(w - bW, bx - mvX));
+                  const srcY = Math.max(0, Math.min(h - bH, by - mvY));
+
+                  for (let py = 0; py < bH; py++) {
+                    const destRow = (by + py) * w + bx;
+                    const srcRow = (srcY + py) * w + srcX;
+                    for (let px = 0; px < bW; px++) {
+                      nextBuffer[destRow + px] = prevBuffer[srcRow + px];
+                    }
+                  }
+                }
+              }
+            }
+
+            this.moshCtx.putImageData(moshImgData, 0, 0);
+            this.prevLuma.set(this.currLuma);
+          }
+
+          // Export current mosh frame as ArrayBuffer
+          async exportFrameBuffer() {
+            const blob = await new Promise(resolve => this.moshCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+            return new Uint8Array(await blob.arrayBuffer());
+          }
+
+          destroy() {
+            this.prevLuma = null;
+            this.currLuma = null;
+            this.moshCanvas.width = 1;
+            this.moshCanvas.height = 1;
+            this.videoCanvas.width = 1;
+            this.videoCanvas.height = 1;
+          }
+        }
+
+        // Helper: Video Seek with Promise
+        async function seekVideo(video, time) {
+          return new Promise(resolve => {
+            let done = false;
+            const cleanup = () => {
+              if (!done) {
+                done = true;
+                video.removeEventListener('seeked', onSeeked);
+                resolve();
+              }
+            };
+            const timeout = setTimeout(cleanup, 250); // Fallback timeout
+            const onSeeked = () => {
+              clearTimeout(timeout);
+              cleanup();
+            };
+            video.addEventListener('seeked', onSeeked, { once: true });
+            video.currentTime = Math.max(0, Math.min(time, video.duration - 0.02));
+          });
+        }
+
+        // MAIN DATAMOSHING PIPELINE
+        btnGenerate.addEventListener('click', async () => {
+          if (state.isProcessing) return;
+          state.isProcessing = true;
+          btnGenerate.disabled = true;
+          btnGenerateText.textContent = 'Processing Datamosh...';
+          outputPanel.classList.remove('visible');
+          processingPanel.style.display = 'flex';
+
+          try {
+            // 1. Initialize FFmpeg
+            progressPhaseLabel.textContent = 'Initializing FFmpeg.wasm runtime...';
+            progressBar.style.width = '3%';
+            progressPercentageLabel.textContent = '3%';
+            const ffmpeg = await getFFmpeg();
+
+            // 2. Timeline and Canvas Setup
+            const fps = state.fps;
+            const audioDuration = state.audioDuration;
+            const totalFrames = Math.ceil(audioDuration * fps);
+
+            // Determine Target Dimensions
+            let targetWidth = state.videoWidth;
+            let targetHeight = state.videoHeight;
+
+            if (state.resolutionMode === '720') {
+              if (targetWidth > 1280 || targetHeight > 720) {
+                const ratio = targetWidth / targetHeight;
+                if (ratio >= 16 / 9) {
+                  targetWidth = 1280;
+                  targetHeight = Math.round(1280 / ratio);
+                } else {
+                  targetHeight = 720;
+                  targetWidth = Math.round(720 * ratio);
+                }
+              }
+            } else if (state.resolutionMode === '480') {
+              const ratio = targetWidth / targetHeight;
+              targetHeight = 480;
+              targetWidth = Math.round(480 * ratio);
+            }
+
+            // Ensure even dimensions for H.264
+            targetWidth = targetWidth - (targetWidth % 2);
+            targetHeight = targetHeight - (targetHeight % 2);
+
+            liveMoshCanvas.width = targetWidth;
+            liveMoshCanvas.height = targetHeight;
+
+            const moshEngine = new DatamoshVectorEngine(targetWidth, targetHeight, {
+              smearMultiplier: state.smearMultiplier
+            });
+
+            // 3. Glitch Interval Calculator
+            // Glitch slider (0% to 100%) maps to average frame interval
+            let keyframeInterval;
+            if (state.glitchFrequency === 0) {
+              keyframeInterval = totalFrames + 9999; // Never inject after frame 0
+            } else {
+              keyframeInterval = Math.max(8, Math.round(120 * Math.pow(1 - state.glitchFrequency / 100, 1.4) + 10));
+            }
+
+            let lastKeyframeIndex = -9999;
+            let imageIndex = 0;
+            const writtenFrameFiles = [];
+
+            // 4. Sequential Frame Moshing Loop
+            progressPhaseLabel.textContent = `Moshing ${totalFrames} frames to match audio duration (${audioDuration.toFixed(1)}s)...`;
+
+            for (let i = 0; i < totalFrames; i++) {
+              const videoTime = (i / fps) % state.videoDuration;
+              await seekVideo(state.videoElement, videoTime);
+
+              // Check if we should inject an image as an I-frame keyframe
+              const shouldInject = (i === 0) || ((i - lastKeyframeIndex) >= keyframeInterval && Math.random() < 0.85);
+
+              if (shouldInject) {
+                const img = state.stillImages[imageIndex % state.stillImages.length];
+                imageIndex++;
+                lastKeyframeIndex = i;
+                moshEngine.injectKeyframe(img);
+                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • INJECTING KEYFRAME #${imageIndex}`;
+              } else {
+                // Force P-frame: Smear pixels using video's motion vectors
+                moshEngine.processPFrame(state.videoElement);
+                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • FORCING P-FRAME MOTION VECTOR SMEAR`;
+              }
+
+              // Update Live Viewport
+              liveMoshCtx.drawImage(moshEngine.moshCanvas, 0, 0);
+
+              // Export frame & write directly to FFmpeg virtual filesystem
+              const frameBuffer = await moshEngine.exportFrameBuffer();
+              const filename = `mosh_${String(i).padStart(5, '0')}.jpg`;
+              await ffmpeg.writeFile(filename, frameBuffer);
+              writtenFrameFiles.push(filename);
+
+              // Progress Update & UI Yield
+              const percent = Math.round(((i + 1) / totalFrames) * 75); // 0-75% for frame generation
+              progressBar.style.width = `${percent}%`;
+              progressPercentageLabel.textContent = `${percent}%`;
+              progressPhaseLabel.textContent = `Rendering Moshed Frame ${i + 1} of ${totalFrames}...`;
+
+              // Yield to main UI thread to maintain 60fps responsiveness
+              await new Promise(resolve => setTimeout(resolve, 0));
+            }
+
+            moshEngine.destroy();
+
+            // 5. Write Audio Track into Virtual FS
+            progressPhaseLabel.textContent = 'Writing audio track to virtual filesystem...';
+            progressBar.style.width = '80%';
+            progressPercentageLabel.textContent = '80%';
+
+            const audioArrayBuffer = await state.audioFile.arrayBuffer();
+            await ffmpeg.writeFile('input_audio', new Uint8Array(audioArrayBuffer));
+
+            // 6. Execute FFmpeg Muxing Command
+            progressPhaseLabel.textContent = 'Encoding H.264 video and muxing AAC audio stream (-shortest)...';
+            progressBar.style.width = '85%';
+            progressPercentageLabel.textContent = '85%';
+            await new Promise(resolve => setTimeout(resolve, 10));
+
+            // Flags:
+            // -framerate 30 : input framerate
+            // -i mosh_%05d.jpg : sequential frame inputs
+            // -i input_audio : master audio input
+            // -c:v libx264 -preset ultrafast -pix_fmt yuv420p : standard MP4 video
+            // -g 9999 : Force massive GOP to lock in P-frame datamosh continuity
+            // -c:a aac -b:a 192k : high fidelity audio
+            // -map 0:v:0 -map 1:a:0 -shortest : exactly match audio duration
+            await ffmpeg.exec([
+              '-framerate', String(fps),
+              '-i', 'mosh_%05d.jpg',
+              '-i', 'input_audio',
+              '-c:v', 'libx264',
+              '-preset', 'ultrafast',
+              '-crf', '22',
+              '-pix_fmt', 'yuv420p',
+              '-g', '9999',
+              '-c:a', 'aac',
+              '-b:a', '192k',
+              '-map', '0:v:0',
+              '-map', '1:a:0',
+              '-shortest',
+              'datamoshed_output.mp4'
+            ]);
+
+            progressBar.style.width = '95%';
+            progressPercentageLabel.textContent = '95%';
+            progressPhaseLabel.textContent = 'Retrieving completed datamoshed MP4...';
+
+            // 7. Read Output File & Free Virtual Memory
+            const outputData = await ffmpeg.readFile('datamoshed_output.mp4');
+            const videoBlob = new Blob([outputData.buffer], { type: 'video/mp4' });
+
+            if (state.outputBlobUrl) URL.revokeObjectURL(state.outputBlobUrl);
+            state.outputBlobUrl = URL.createObjectURL(videoBlob);
+
+            // Cleanup Virtual Filesystem to prevent WASM heap bloat
+            for (const file of writtenFrameFiles) {
+              try { await ffmpeg.deleteFile(file); } catch (e) {}
+            }
+            try { await ffmpeg.deleteFile('input_audio'); } catch (e) {}
+            try { await ffmpeg.deleteFile('datamoshed_output.mp4'); } catch (e) {}
+
+            // 8. Display Results in Video Preview
+            progressBar.style.width = '100%';
+            progressPercentageLabel.textContent = '100%';
+            progressPhaseLabel.textContent = 'Datamosh complete!';
+
+            outputVideo.src = state.outputBlobUrl;
+            btnDownloadVideo.href = state.outputBlobUrl;
+            specDuration.textContent = formatDuration(audioDuration);
+            specFrames.textContent = `${totalFrames} @ ${fps} FPS`;
+            specFilesize.textContent = formatBytes(videoBlob.size);
+
+            processingPanel.style.display = 'none';
+            outputPanel.classList.add('visible');
+            outputVideo.scrollIntoView({ behavior: 'smooth' });
+
+          } catch (err) {
+            console.error('Datamosh processing error:', err);
+            alert(`Datamosh generation failed: ${err.message || err}`);
+            processingPanel.style.display = 'none';
+          } finally {
+            state.isProcessing = false;
+            updateUIState();
+          }
+        });
+
+        // Replay Button
+        btnReplayPreview.addEventListener('click', () => {
+          outputVideo.currentTime = 0;
+          outputVideo.play();
+        });
+
+      })();
+    </script>
+  </body>
+</html>
+
+

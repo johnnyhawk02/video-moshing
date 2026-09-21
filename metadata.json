@@ -1,0 +1,6 @@
+{
+  "name": "Datamosh Video Generator",
+  "description": "Client-side datamoshed video generator combining video motion vectors, injected still images, and synchronized audio using HTML5 Canvas and FFmpeg WebAssembly.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
