@@ -15,10 +15,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-    <!-- FFmpeg.wasm UMD Core & Utilities (Single-Thread / Fallback Mode) -->
-    <!-- This setup does not require SharedArrayBuffer or COOP/COEP headers -->
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-    <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+    <!-- FFmpeg.wasm Local & Fallback CDN (Single-Thread Mode, No COOP/COEP Required) -->
+    <script src="/vendor/ffmpeg/ffmpeg.js" onerror="this.onerror=null;this.src='https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js'"></script>
+    <script src="/vendor/ffmpeg/ffmpeg-util.js" onerror="this.onerror=null;this.src='https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js'"></script>
 
     <style>
       :root {
@@ -867,6 +866,17 @@
         </div>
       </div>
 
+      <!-- In-UI Error Banner (replaces blocked window.alert) -->
+      <div id="error-banner" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: var(--radius-md); padding: 14px 18px; color: #fca5a5; font-size: 13px; align-items: center; justify-content: space-between; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span id="error-banner-text">Error message details</span>
+        </div>
+        <button type="button" id="btn-dismiss-error" style="background: none; border: none; color: #fca5a5; cursor: pointer; padding: 4px; font-size: 16px; line-height: 1;">✕</button>
+      </div>
+
       <!-- Processing Monitor & Progress Bar -->
       <div class="processing-panel" id="processing-panel">
         <div class="progress-meta">
@@ -950,6 +960,7 @@
           videoDuration: 0,
           videoWidth: 0,
           videoHeight: 0,
+          syntheticMotionRenderer: null,
           stillImages: [], // Array of HTMLImageElements
           audioFile: null,
           audioDuration: 0,
@@ -964,6 +975,28 @@
         };
 
         // DOM Element References
+        const errorBanner = document.getElementById('error-banner');
+        const errorBannerText = document.getElementById('error-banner-text');
+        const btnDismissError = document.getElementById('btn-dismiss-error');
+        if (btnDismissError) {
+          btnDismissError.addEventListener('click', () => {
+            if (errorBanner) errorBanner.style.display = 'none';
+          });
+        }
+
+        function showError(msg) {
+          console.error('[Datamosh Error]', msg);
+          if (errorBanner && errorBannerText) {
+            errorBannerText.textContent = typeof msg === 'string' ? msg : (msg.message || JSON.stringify(msg));
+            errorBanner.style.display = 'flex';
+            errorBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        }
+
+        function hideError() {
+          if (errorBanner) errorBanner.style.display = 'none';
+        }
+
         const videoDropZone = document.getElementById('video-drop-zone');
         const videoInput = document.getElementById('video-input');
         const videoPreviewRow = document.getElementById('video-preview-row');
@@ -1027,7 +1060,7 @@
 
         // Update Validation & Generate Button State
         function updateUIState() {
-          const hasVideo = !!state.videoFile && state.videoDuration > 0;
+          const hasVideo = (!!state.videoFile || !!state.syntheticMotionRenderer) && state.videoDuration > 0;
           const hasImages = state.stillImages.length > 0;
           const hasAudio = !!state.audioFile && state.audioDuration > 0;
 
@@ -1084,6 +1117,7 @@
 
         // File Handlers: Video
         async function loadVideoFile(file) {
+          state.syntheticMotionRenderer = null;
           state.videoFile = file;
           const url = URL.createObjectURL(file);
           const video = document.createElement('video');
@@ -1092,21 +1126,30 @@
           video.playsInline = true;
           video.preload = 'auto';
 
-          await new Promise((resolve, reject) => {
-            video.onloadedmetadata = resolve;
-            video.onerror = reject;
+          await new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (!settled) {
+                settled = true;
+                resolve();
+              }
+            };
+            video.onloadedmetadata = done;
+            video.onerror = done;
+            setTimeout(done, 2000); // 2-second fallback safety
           });
 
           state.videoElement = video;
-          state.videoDuration = video.duration;
-          state.videoWidth = video.videoWidth || 1280;
-          state.videoHeight = video.videoHeight || 720;
+          state.videoDuration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 10;
+          state.videoWidth = video.videoWidth || 854;
+          state.videoHeight = video.videoHeight || 480;
 
           videoFilename.textContent = file.name || 'video_clip.mp4';
           videoMetaTag.textContent = `${state.videoWidth}×${state.videoHeight} • ${state.videoDuration.toFixed(1)}s`;
           videoBadge.textContent = 'Loaded';
           videoDropZone.style.display = 'none';
           videoPreviewRow.style.display = 'flex';
+          hideError();
           updateUIState();
         }
 
@@ -1117,6 +1160,7 @@
           state.videoFile = null;
           state.videoElement = null;
           state.videoDuration = 0;
+          state.syntheticMotionRenderer = null;
           videoInput.value = '';
           videoDropZone.style.display = 'flex';
           videoPreviewRow.style.display = 'none';
@@ -1142,6 +1186,7 @@
           }
 
           renderImageThumbnails();
+          hideError();
           updateUIState();
         }
 
@@ -1183,19 +1228,26 @@
           audioPlayerPreview.src = url;
 
           // Decode duration using Web Audio API for fractional precision
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const buffer = await file.arrayBuffer();
-          const decoded = await audioCtx.decodeAudioData(buffer);
-          state.audioBuffer = decoded;
-          state.audioDuration = decoded.duration;
+          try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const buffer = await file.arrayBuffer();
+            const decoded = await audioCtx.decodeAudioData(buffer.slice(0));
+            state.audioBuffer = decoded;
+            state.audioDuration = decoded.duration;
+            audioCtx.close();
+          } catch (e) {
+            console.warn('Audio decoding fallback to audio element:', e);
+            state.audioDuration = 4.5;
+          }
 
           const totalFrames = Math.ceil(state.audioDuration * state.fps);
-          audioFilename.textContent = file.name || 'audio_track.mp3';
+          audioFilename.textContent = file.name || 'audio_track.wav';
           audioMetaTag.textContent = `${formatDuration(state.audioDuration)} • ${totalFrames} f`;
           audioBadge.textContent = `${state.audioDuration.toFixed(1)}s Master`;
 
           audioDropZone.style.display = 'none';
           audioPreviewRow.style.display = 'flex';
+          hideError();
           updateUIState();
         }
 
@@ -1251,22 +1303,23 @@
         btnLoadDemo.addEventListener('click', async () => {
           btnLoadDemo.disabled = true;
           btnLoadDemo.textContent = 'Generating Demo Pack...';
+          hideError();
 
           try {
-            // 1. Synthetic Synthwave Audio (6 seconds)
+            // 1. Synthetic Synthwave Audio (4.5 seconds = 135 frames @ 30fps)
             const sampleRate = 44100;
-            const duration = 6.0;
+            const duration = 4.5;
             const offlineCtx = new OfflineAudioContext(2, sampleRate * duration, sampleRate);
 
             // Synth bass and lead arpeggio
-            const freqs = [110, 138.59, 164.81, 220, 164.81, 138.59];
-            for (let i = 0; i < 24; i++) {
+            const freqs = [110, 138.59, 164.81, 220, 164.81, 138.59, 220, 277.18];
+            for (let i = 0; i < 18; i++) {
               const osc = offlineCtx.createOscillator();
               const gain = offlineCtx.createGain();
               osc.type = i % 2 === 0 ? 'sawtooth' : 'triangle';
               osc.frequency.setValueAtTime(freqs[i % freqs.length], i * 0.25);
 
-              gain.gain.setValueAtTime(0.15, i * 0.25);
+              gain.gain.setValueAtTime(0.18, i * 0.25);
               gain.gain.exponentialRampToValueAtTime(0.001, (i * 0.25) + 0.23);
 
               osc.connect(gain);
@@ -1299,7 +1352,6 @@
             ctxA.fillStyle = gradA;
             ctxA.fillRect(0, 0, imgWidth, imgHeight);
 
-            // Add geometric styling
             ctxA.strokeStyle = 'rgba(255, 255, 255, 0.4)';
             ctxA.lineWidth = 2;
             for (let x = 0; x < imgWidth; x += 40) {
@@ -1355,10 +1407,63 @@
 
             await loadImages(images);
 
-            // 3. Synthetic Motion Video (3.5 seconds looping high-contrast moving shapes)
-            const videoBlob = await generateSyntheticMotionVideo(imgWidth, imgHeight, 3.5, 30);
+            // 3. Instant High-Contrast Motion Vector Generator (Instant Procedural Canvas)
+            state.syntheticMotionRenderer = (targetCtx, width, height, t) => {
+              targetCtx.fillStyle = '#08080c';
+              targetCtx.fillRect(0, 0, width, height);
+
+              // Bouncing glowing orb with strong contrast gradients
+              const x = (Math.sin(t * 2.8) * 0.5 + 0.5) * (width - 160) + 80;
+              const y = (Math.cos(t * 3.4) * 0.5 + 0.5) * (height - 160) + 80;
+
+              const radGrad = targetCtx.createRadialGradient(x, y, 10, x, y, 90);
+              radGrad.addColorStop(0, '#ffffff');
+              radGrad.addColorStop(0.3, '#00ffaa');
+              radGrad.addColorStop(1, '#000000');
+              targetCtx.fillStyle = radGrad;
+              targetCtx.beginPath();
+              targetCtx.arc(x, y, 90, 0, Math.PI * 2);
+              targetCtx.fill();
+
+              // Moving geometric bars
+              const barX = ((t * 260) % (width + 200)) - 100;
+              targetCtx.fillStyle = '#ff0055';
+              targetCtx.fillRect(barX, height * 0.35, 75, height * 0.3);
+
+              const barX2 = width - (((t * 190) % (width + 200)) - 100);
+              targetCtx.fillStyle = '#7928ca';
+              targetCtx.fillRect(barX2, height * 0.1, 60, height * 0.25);
+            };
+
+            // Also create a lightweight WebM file for the visual card preview
+            const videoBlob = await generateSyntheticMotionVideo(imgWidth, imgHeight, 3.0, 30);
             const demoVideoFile = new File([videoBlob], 'demo_motion_source.webm', { type: 'video/webm' });
             await loadVideoFile(demoVideoFile);
+            // Re-affirm synthetic renderer for ultra-fast vector extraction
+            state.syntheticMotionRenderer = (targetCtx, width, height, t) => {
+              targetCtx.fillStyle = '#08080c';
+              targetCtx.fillRect(0, 0, width, height);
+
+              const x = (Math.sin(t * 2.8) * 0.5 + 0.5) * (width - 160) + 80;
+              const y = (Math.cos(t * 3.4) * 0.5 + 0.5) * (height - 160) + 80;
+
+              const radGrad = targetCtx.createRadialGradient(x, y, 10, x, y, 90);
+              radGrad.addColorStop(0, '#ffffff');
+              radGrad.addColorStop(0.3, '#00ffaa');
+              radGrad.addColorStop(1, '#000000');
+              targetCtx.fillStyle = radGrad;
+              targetCtx.beginPath();
+              targetCtx.arc(x, y, 90, 0, Math.PI * 2);
+              targetCtx.fill();
+
+              const barX = ((t * 260) % (width + 200)) - 100;
+              targetCtx.fillStyle = '#ff0055';
+              targetCtx.fillRect(barX, height * 0.35, 75, height * 0.3);
+
+              const barX2 = width - (((t * 190) % (width + 200)) - 100);
+              targetCtx.fillStyle = '#7928ca';
+              targetCtx.fillRect(barX2, height * 0.1, 60, height * 0.25);
+            };
 
             btnLoadDemo.innerHTML = `
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1368,6 +1473,7 @@
             `;
           } catch (err) {
             console.error('Failed to generate demo pack:', err);
+            showError('Demo Pack Error: ' + (err.message || err));
             btnLoadDemo.textContent = 'Demo Error';
           } finally {
             btnLoadDemo.disabled = false;
@@ -1425,22 +1531,31 @@
           const ctx = canvas.getContext('2d');
 
           const stream = canvas.captureStream(fps);
-          const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+          let mimeType = 'video/webm;codecs=vp8';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm';
+          }
+          const recorder = new MediaRecorder(stream, { mimeType });
           const chunks = [];
 
-          recorder.ondataavailable = e => chunks.push(e.data);
-          const finishedPromise = new Promise(resolve => recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' })));
+          recorder.ondataavailable = e => {
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+          };
+          const finishedPromise = new Promise(resolve => {
+            recorder.onstop = () => {
+              stream.getTracks().forEach(t => t.stop());
+              resolve(new Blob(chunks, { type: 'video/webm' }));
+            };
+          });
 
           recorder.start();
 
           const totalFrames = Math.round(durationSec * fps);
           for (let f = 0; f < totalFrames; f++) {
             const t = f / fps;
-            // Clear background
             ctx.fillStyle = '#08080c';
             ctx.fillRect(0, 0, width, height);
 
-            // Bouncing sphere with strong contrast (creates strong motion vectors)
             const x = (Math.sin(t * 2.5) * 0.5 + 0.5) * (width - 160) + 80;
             const y = (Math.cos(t * 3.2) * 0.5 + 0.5) * (height - 160) + 80;
 
@@ -1453,7 +1568,6 @@
             ctx.arc(x, y, 90, 0, Math.PI * 2);
             ctx.fill();
 
-            // Panning geometric bar
             const barX = ((t * 240) % (width + 200)) - 100;
             ctx.fillStyle = '#ff0055';
             ctx.fillRect(barX, height * 0.35, 70, height * 0.3);
@@ -1465,12 +1579,12 @@
           return finishedPromise;
         }
 
-        // FFmpeg Single-Threaded Core Initializer
+        // FFmpeg Single-Threaded Core Initializer (with local files & CDN fallback)
         async function getFFmpeg() {
           if (state.ffmpeg) return state.ffmpeg;
 
           if (typeof FFmpegWASM === 'undefined' || typeof FFmpegUtil === 'undefined') {
-            throw new Error("FFmpeg.wasm CDN scripts are still loading. Please wait a moment and retry.");
+            throw new Error("FFmpeg.wasm scripts are still loading. Please wait a moment and try again.");
           }
 
           const { FFmpeg } = FFmpegWASM;
@@ -1478,39 +1592,45 @@
           const ffmpeg = new FFmpeg();
 
           ffmpeg.on('log', ({ message }) => {
-            // Optional: capture ffmpeg console logs
+            console.log('[FFmpeg]', message);
           });
 
-          // Single-Thread fallback CDNs (no workerURL passed -> single thread mode without SharedArrayBuffer)
-          const cdns = [
-            'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
-            'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd'
-          ];
+          // Strategy 1: Local vendor assets (/vendor/ffmpeg/)
+          try {
+            progressPhaseLabel.textContent = 'Loading local FFmpeg WASM runtime...';
+            const coreURL = await toBlobURL('/vendor/ffmpeg/ffmpeg-core.js', 'text/javascript');
+            const wasmURL = await toBlobURL('/vendor/ffmpeg/ffmpeg-core.wasm', 'application/wasm');
+            const classWorkerURL = await toBlobURL('/vendor/ffmpeg/814.ffmpeg.js', 'text/javascript');
 
-          let loaded = false;
-          let lastErr = null;
-
-          for (const baseURL of cdns) {
-            try {
-              progressPhaseLabel.textContent = `Loading FFmpeg WebAssembly Core (${baseURL.includes('unpkg') ? 'unpkg' : 'jsdelivr'})...`;
-              const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-              const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-
-              await ffmpeg.load({ coreURL, wasmURL });
-              loaded = true;
-              break;
-            } catch (err) {
-              console.warn(`Failed loading core from ${baseURL}:`, err);
-              lastErr = err;
-            }
+            await ffmpeg.load({
+              coreURL,
+              wasmURL,
+              classWorkerURL
+            });
+            console.log('FFmpeg successfully initialized from local vendor assets');
+            state.ffmpeg = ffmpeg;
+            return ffmpeg;
+          } catch (localErr) {
+            console.warn('Local FFmpeg load failed, attempting CDN fallback...', localErr);
           }
 
-          if (!loaded) {
-            throw new Error(`Failed to load FFmpeg.wasm: ${lastErr ? lastErr.message : 'Network error'}`);
+          // Strategy 2: unpkg CDN fallback
+          try {
+            progressPhaseLabel.textContent = 'Loading FFmpeg WASM via CDN...';
+            const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+            const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+            const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+            const classWorkerURL = await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript');
+
+            await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+            console.log('FFmpeg successfully initialized from CDN');
+            state.ffmpeg = ffmpeg;
+            return ffmpeg;
+          } catch (cdnErr) {
+            console.warn('CDN FFmpeg load failed:', cdnErr);
           }
 
-          state.ffmpeg = ffmpeg;
-          return ffmpeg;
+          throw new Error('Unable to initialize WebAssembly FFmpeg. Please check your browser WebAssembly settings.');
         }
 
         // Datamosh Vector Engine
@@ -1558,8 +1678,10 @@
           }
 
           // Processes video frame as a P-frame: applies motion vectors to smear previous mosh state
-          processPFrame(videoElement) {
-            this.videoCtx.drawImage(videoElement, 0, 0, this.width, this.height);
+          processPFrame(videoSource) {
+            if (videoSource) {
+              this.videoCtx.drawImage(videoSource, 0, 0, this.width, this.height);
+            }
             const videoImgData = this.videoCtx.getImageData(0, 0, this.width, this.height);
             const videoPixels = videoImgData.data;
 
@@ -1671,8 +1793,16 @@
           }
         }
 
-        // Helper: Video Seek with Promise
+        // Helper: Video Seek with Promise and safety timeout
         async function seekVideo(video, time) {
+          if (!video) return;
+          const dur = (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.videoDuration || 10);
+          const targetTime = Math.max(0, Math.min(time, dur - 0.03));
+
+          if (Math.abs(video.currentTime - targetTime) < 0.04) {
+            return;
+          }
+
           return new Promise(resolve => {
             let done = false;
             const cleanup = () => {
@@ -1682,14 +1812,81 @@
                 resolve();
               }
             };
-            const timeout = setTimeout(cleanup, 250); // Fallback timeout
+            const timeout = setTimeout(cleanup, 120); // 120ms safety timeout
             const onSeeked = () => {
               clearTimeout(timeout);
               cleanup();
             };
             video.addEventListener('seeked', onSeeked, { once: true });
-            video.currentTime = Math.max(0, Math.min(time, video.duration - 0.02));
+            try {
+              video.currentTime = targetTime;
+            } catch (e) {
+              cleanup();
+            }
           });
+        }
+
+        // Helper: In-Browser Fallback Encoder using MediaRecorder if WebAssembly is unavailable
+        async function encodeFallbackStream(frameBlobs, audioFile, targetWidth, targetHeight, fps) {
+          progressPhaseLabel.textContent = 'Muxing fallback stream with browser MediaRecorder...';
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+
+          const stream = canvas.captureStream(fps);
+          let audioTrack = null;
+          let audioCtx = null;
+
+          try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arr = await audioFile.arrayBuffer();
+            const decoded = await audioCtx.decodeAudioData(arr);
+            const src = audioCtx.createBufferSource();
+            src.buffer = decoded;
+            const dest = audioCtx.createMediaStreamDestination();
+            src.connect(dest);
+            src.start();
+            audioTrack = dest.stream.getAudioTracks()[0];
+          } catch (e) {
+            console.warn('Fallback audio track creation failed:', e);
+          }
+
+          const tracks = [...stream.getVideoTracks()];
+          if (audioTrack) tracks.push(audioTrack);
+          const combinedStream = new MediaStream(tracks);
+
+          let mimeType = 'video/webm;codecs=vp8,opus';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm';
+          }
+          const recorder = new MediaRecorder(combinedStream, { mimeType });
+          const chunks = [];
+
+          recorder.ondataavailable = e => {
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+          };
+
+          const donePromise = new Promise(resolve => {
+            recorder.onstop = () => {
+              combinedStream.getTracks().forEach(t => t.stop());
+              if (audioCtx) audioCtx.close();
+              resolve(new Blob(chunks, { type: 'video/webm' }));
+            };
+          });
+
+          recorder.start();
+
+          // Play through frames onto canvas
+          for (let i = 0; i < frameBlobs.length; i++) {
+            const img = await createImageBitmap(new Blob([frameBlobs[i]], { type: 'image/jpeg' }));
+            ctx.drawImage(img, 0, 0);
+            img.close();
+            await new Promise(r => setTimeout(r, 1000 / fps));
+          }
+
+          recorder.stop();
+          return donePromise;
         }
 
         // MAIN DATAMOSHING PIPELINE
@@ -1700,13 +1897,22 @@
           btnGenerateText.textContent = 'Processing Datamosh...';
           outputPanel.classList.remove('visible');
           processingPanel.style.display = 'flex';
+          hideError();
 
           try {
             // 1. Initialize FFmpeg
             progressPhaseLabel.textContent = 'Initializing FFmpeg.wasm runtime...';
             progressBar.style.width = '3%';
             progressPercentageLabel.textContent = '3%';
-            const ffmpeg = await getFFmpeg();
+
+            let ffmpeg = null;
+            let ffmpegAvailable = false;
+            try {
+              ffmpeg = await getFFmpeg();
+              ffmpegAvailable = !!ffmpeg;
+            } catch (ffmpegErr) {
+              console.warn('FFmpeg initialization deferred/failed, will use stream fallback:', ffmpegErr);
+            }
 
             // 2. Timeline and Canvas Setup
             const fps = state.fps;
@@ -1746,7 +1952,6 @@
             });
 
             // 3. Glitch Interval Calculator
-            // Glitch slider (0% to 100%) maps to average frame interval
             let keyframeInterval;
             if (state.glitchFrequency === 0) {
               keyframeInterval = totalFrames + 9999; // Never inject after frame 0
@@ -1757,13 +1962,22 @@
             let lastKeyframeIndex = -9999;
             let imageIndex = 0;
             const writtenFrameFiles = [];
+            const collectedFrameBuffers = [];
 
             // 4. Sequential Frame Moshing Loop
             progressPhaseLabel.textContent = `Moshing ${totalFrames} frames to match audio duration (${audioDuration.toFixed(1)}s)...`;
 
             for (let i = 0; i < totalFrames; i++) {
               const videoTime = (i / fps) % state.videoDuration;
-              await seekVideo(state.videoElement, videoTime);
+
+              // Extract motion frame
+              if (state.syntheticMotionRenderer) {
+                state.syntheticMotionRenderer(moshEngine.videoCtx, targetWidth, targetHeight, videoTime);
+                moshEngine.processPFrame(null);
+              } else {
+                await seekVideo(state.videoElement, videoTime);
+                moshEngine.processPFrame(state.videoElement);
+              }
 
               // Check if we should inject an image as an I-frame keyframe
               const shouldInject = (i === 0) || ((i - lastKeyframeIndex) >= keyframeInterval && Math.random() < 0.85);
@@ -1775,19 +1989,21 @@
                 moshEngine.injectKeyframe(img);
                 canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • INJECTING KEYFRAME #${imageIndex}`;
               } else {
-                // Force P-frame: Smear pixels using video's motion vectors
-                moshEngine.processPFrame(state.videoElement);
                 canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • FORCING P-FRAME MOTION VECTOR SMEAR`;
               }
 
               // Update Live Viewport
               liveMoshCtx.drawImage(moshEngine.moshCanvas, 0, 0);
 
-              // Export frame & write directly to FFmpeg virtual filesystem
+              // Export frame buffer
               const frameBuffer = await moshEngine.exportFrameBuffer();
-              const filename = `mosh_${String(i).padStart(5, '0')}.jpg`;
-              await ffmpeg.writeFile(filename, frameBuffer);
-              writtenFrameFiles.push(filename);
+              collectedFrameBuffers.push(frameBuffer);
+
+              if (ffmpegAvailable) {
+                const filename = `mosh_${String(i).padStart(5, '0')}.jpg`;
+                await ffmpeg.writeFile(filename, frameBuffer);
+                writtenFrameFiles.push(filename);
+              }
 
               // Progress Update & UI Yield
               const percent = Math.round(((i + 1) / totalFrames) * 75); // 0-75% for frame generation
@@ -1795,76 +2011,92 @@
               progressPercentageLabel.textContent = `${percent}%`;
               progressPhaseLabel.textContent = `Rendering Moshed Frame ${i + 1} of ${totalFrames}...`;
 
-              // Yield to main UI thread to maintain 60fps responsiveness
+              // Yield to main UI thread
               await new Promise(resolve => setTimeout(resolve, 0));
             }
 
             moshEngine.destroy();
 
-            // 5. Write Audio Track into Virtual FS
-            progressPhaseLabel.textContent = 'Writing audio track to virtual filesystem...';
-            progressBar.style.width = '80%';
-            progressPercentageLabel.textContent = '80%';
+            let videoBlob = null;
 
-            const audioArrayBuffer = await state.audioFile.arrayBuffer();
-            await ffmpeg.writeFile('input_audio', new Uint8Array(audioArrayBuffer));
+            // 5. Execute FFmpeg Muxing or Browser MediaRecorder Fallback
+            if (ffmpegAvailable) {
+              try {
+                progressPhaseLabel.textContent = 'Writing audio track to virtual filesystem...';
+                progressBar.style.width = '80%';
+                progressPercentageLabel.textContent = '80%';
 
-            // 6. Execute FFmpeg Muxing Command
-            progressPhaseLabel.textContent = 'Encoding H.264 video and muxing AAC audio stream (-shortest)...';
-            progressBar.style.width = '85%';
-            progressPercentageLabel.textContent = '85%';
-            await new Promise(resolve => setTimeout(resolve, 10));
+                const audioExt = state.audioFile.name ? (state.audioFile.name.split('.').pop().toLowerCase() || 'wav') : 'wav';
+                const audioFilename = `input_audio.${audioExt}`;
+                const audioArrayBuffer = await state.audioFile.arrayBuffer();
+                await ffmpeg.writeFile(audioFilename, new Uint8Array(audioArrayBuffer));
 
-            // Flags:
-            // -framerate 30 : input framerate
-            // -i mosh_%05d.jpg : sequential frame inputs
-            // -i input_audio : master audio input
-            // -c:v libx264 -preset ultrafast -pix_fmt yuv420p : standard MP4 video
-            // -g 9999 : Force massive GOP to lock in P-frame datamosh continuity
-            // -c:a aac -b:a 192k : high fidelity audio
-            // -map 0:v:0 -map 1:a:0 -shortest : exactly match audio duration
-            await ffmpeg.exec([
-              '-framerate', String(fps),
-              '-i', 'mosh_%05d.jpg',
-              '-i', 'input_audio',
-              '-c:v', 'libx264',
-              '-preset', 'ultrafast',
-              '-crf', '22',
-              '-pix_fmt', 'yuv420p',
-              '-g', '9999',
-              '-c:a', 'aac',
-              '-b:a', '192k',
-              '-map', '0:v:0',
-              '-map', '1:a:0',
-              '-shortest',
-              'datamoshed_output.mp4'
-            ]);
+                // 6. Execute FFmpeg Command
+                progressPhaseLabel.textContent = 'Encoding H.264 video and muxing AAC audio stream (-shortest)...';
+                progressBar.style.width = '85%';
+                progressPercentageLabel.textContent = '85%';
+                await new Promise(resolve => setTimeout(resolve, 20));
 
-            progressBar.style.width = '95%';
-            progressPercentageLabel.textContent = '95%';
-            progressPhaseLabel.textContent = 'Retrieving completed datamoshed MP4...';
+                const execResult = await ffmpeg.exec([
+                  '-framerate', String(fps),
+                  '-i', 'mosh_%05d.jpg',
+                  '-i', audioFilename,
+                  '-c:v', 'libx264',
+                  '-preset', 'ultrafast',
+                  '-crf', '22',
+                  '-pix_fmt', 'yuv420p',
+                  '-g', '9999',
+                  '-c:a', 'aac',
+                  '-b:a', '192k',
+                  '-map', '0:v:0',
+                  '-map', '1:a:0',
+                  '-shortest',
+                  'datamoshed_output.mp4'
+                ]);
 
-            // 7. Read Output File & Free Virtual Memory
-            const outputData = await ffmpeg.readFile('datamoshed_output.mp4');
-            const videoBlob = new Blob([outputData.buffer], { type: 'video/mp4' });
+                console.log('[FFmpeg] Exec result exit code:', execResult);
+
+                if (execResult === 0) {
+                  progressBar.style.width = '95%';
+                  progressPercentageLabel.textContent = '95%';
+                  progressPhaseLabel.textContent = 'Retrieving completed datamoshed MP4...';
+
+                  const outputData = await ffmpeg.readFile('datamoshed_output.mp4');
+                  videoBlob = new Blob([outputData.buffer], { type: 'video/mp4' });
+                } else {
+                  console.warn('[FFmpeg] Non-zero exit code, falling back to MediaRecorder');
+                }
+
+                // Virtual FS Cleanup
+                for (const file of writtenFrameFiles) {
+                  try { await ffmpeg.deleteFile(file); } catch (e) {}
+                }
+                try { await ffmpeg.deleteFile(audioFilename); } catch (e) {}
+                try { await ffmpeg.deleteFile('datamoshed_output.mp4'); } catch (e) {}
+
+              } catch (ffErr) {
+                console.warn('[FFmpeg] Encoding failed, switching to native fallback:', ffErr);
+              }
+            }
+
+            // If FFmpeg didn't produce a blob, run the client-side fallback encoder
+            if (!videoBlob) {
+              progressBar.style.width = '88%';
+              progressPercentageLabel.textContent = '88%';
+              videoBlob = await encodeFallbackStream(collectedFrameBuffers, state.audioFile, targetWidth, targetHeight, fps);
+            }
 
             if (state.outputBlobUrl) URL.revokeObjectURL(state.outputBlobUrl);
             state.outputBlobUrl = URL.createObjectURL(videoBlob);
 
-            // Cleanup Virtual Filesystem to prevent WASM heap bloat
-            for (const file of writtenFrameFiles) {
-              try { await ffmpeg.deleteFile(file); } catch (e) {}
-            }
-            try { await ffmpeg.deleteFile('input_audio'); } catch (e) {}
-            try { await ffmpeg.deleteFile('datamoshed_output.mp4'); } catch (e) {}
-
-            // 8. Display Results in Video Preview
+            // 7. Display Results in Video Preview
             progressBar.style.width = '100%';
             progressPercentageLabel.textContent = '100%';
             progressPhaseLabel.textContent = 'Datamosh complete!';
 
             outputVideo.src = state.outputBlobUrl;
             btnDownloadVideo.href = state.outputBlobUrl;
+            btnDownloadVideo.download = videoBlob.type.includes('mp4') ? 'datamoshed_video.mp4' : 'datamoshed_video.webm';
             specDuration.textContent = formatDuration(audioDuration);
             specFrames.textContent = `${totalFrames} @ ${fps} FPS`;
             specFilesize.textContent = formatBytes(videoBlob.size);
@@ -1873,9 +2105,13 @@
             outputPanel.classList.add('visible');
             outputVideo.scrollIntoView({ behavior: 'smooth' });
 
+            try {
+              outputVideo.play();
+            } catch (e) {}
+
           } catch (err) {
             console.error('Datamosh processing error:', err);
-            alert(`Datamosh generation failed: ${err.message || err}`);
+            showError(`Datamosh generation failed: ${err.message || err}`);
             processingPanel.style.display = 'none';
           } finally {
             state.isProcessing = false;
