@@ -850,8 +850,26 @@
           </div>
           <div class="options-group">
             <button type="button" class="option-btn" data-smear="1.0">1.0x (Standard)</button>
-            <button type="button" class="option-btn active" data-smear="1.5">1.5x (Intense Smear)</button>
-            <button type="button" class="option-btn" data-smear="2.0">2.0x (Liquid Melt)</button>
+            <button type="button" class="option-btn active" data-smear="1.6">1.6x (Intense Smear)</button>
+            <button type="button" class="option-btn" data-smear="2.5">2.5x (Liquid Melt)</button>
+          </div>
+        </div>
+
+        <!-- Datamosh Style Mode -->
+        <div class="control-row">
+          <div class="control-header">
+            <span class="control-label">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+              </svg>
+              Datamosh Flavor
+            </span>
+            <span class="control-desc">Aesthetic shader algorithm applied to moving macroblocks</span>
+          </div>
+          <div class="options-group">
+            <button type="button" class="option-btn active" data-flavor="chroma">Chroma RGB Melt (Cyber Glitch)</button>
+            <button type="button" class="option-btn" data-flavor="classic">Classic MPEG-4 P-Frame Smear</button>
+            <button type="button" class="option-btn" data-flavor="bloom">Hyper-Bloom Trails</button>
           </div>
         </div>
 
@@ -968,7 +986,8 @@
           fps: 30,
           glitchFrequency: 35, // 0 to 100
           resolutionMode: '720', // '720', 'native', '480'
-          smearMultiplier: 1.5,
+          smearMultiplier: 1.6,
+          datamoshFlavor: 'chroma', // 'chroma', 'classic', 'bloom'
           isProcessing: false,
           ffmpeg: null,
           outputBlobUrl: null
@@ -1092,6 +1111,14 @@
             document.querySelectorAll('.options-group button[data-smear]').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             state.smearMultiplier = parseFloat(btn.getAttribute('data-smear'));
+          });
+        });
+
+        document.querySelectorAll('.options-group button[data-flavor]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.querySelectorAll('.options-group button[data-flavor]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.datamoshFlavor = btn.getAttribute('data-flavor');
           });
         });
 
@@ -1639,8 +1666,8 @@
             this.width = width;
             this.height = height;
             this.blockSize = 16; // Standard 16x16 macroblock
-            this.searchRadius = 12;
-            this.smearMultiplier = options.smearMultiplier || 1.5;
+            this.smearMultiplier = options.smearMultiplier || 1.6;
+            this.flavor = options.flavor || 'chroma'; // 'chroma', 'classic', 'bloom'
 
             // Working Canvases
             this.moshCanvas = document.createElement('canvas');
@@ -1677,6 +1704,20 @@
             this.moshCtx.drawImage(imageElement, sX, sY, sWidth, sHeight, 0, 0, this.width, this.height);
           }
 
+          // Primes video reference luminance for subsequent motion estimation
+          initReferenceLuma(videoSource) {
+            if (videoSource) {
+              this.videoCtx.drawImage(videoSource, 0, 0, this.width, this.height);
+            }
+            const videoImgData = this.videoCtx.getImageData(0, 0, this.width, this.height);
+            const videoPixels = videoImgData.data;
+            const len = this.width * this.height;
+            if (!this.prevLuma) this.prevLuma = new Uint8Array(len);
+            for (let i = 0, p = 0; i < len; i++, p += 4) {
+              this.prevLuma[i] = (videoPixels[p] * 77 + videoPixels[p + 1] * 150 + videoPixels[p + 2] * 29) >> 8;
+            }
+          }
+
           // Processes video frame as a P-frame: applies motion vectors to smear previous mosh state
           processPFrame(videoSource) {
             if (videoSource) {
@@ -1704,8 +1745,9 @@
             const B = this.blockSize;
             const w = this.width;
             const h = this.height;
-            const r = this.searchRadius;
             const mult = this.smearMultiplier;
+            const isChroma = this.flavor === 'chroma';
+            const isBloom = this.flavor === 'bloom';
 
             for (let by = 0; by < h; by += B) {
               const bH = Math.min(B, h - by);
@@ -1721,19 +1763,18 @@
                   }
                 }
 
-                if (sad0 < 50) continue; // Static block, no motion
+                if (sad0 < 25) continue; // Static block, no motion
 
-                // 2-Step Motion Search
+                // Coarse Search (radius 24, step 6)
                 let bestDx = 0;
                 let bestDy = 0;
                 let minSad = sad0;
-                const step = 3;
 
-                for (let sy = -r; sy <= r; sy += step) {
+                for (let sy = -24; sy <= 24; sy += 6) {
                   const targetY = by + sy;
                   if (targetY < 0 || targetY + bH > h) continue;
 
-                  for (let sx = -r; sx <= r; sx += step) {
+                  for (let sx = -24; sx <= 24; sx += 6) {
                     const targetX = bx + sx;
                     if (targetX < 0 || targetX + bW > w) continue;
 
@@ -1754,32 +1795,84 @@
                   }
                 }
 
-                // Displace pixels along motion vectors (The Datamosh Bloom)
+                // Fine Search (radius 4, step 1 around best coarse candidate)
+                const cDx = bestDx;
+                const cDy = bestDy;
+                for (let sy = cDy - 4; sy <= cDy + 4; sy += 1) {
+                  const targetY = by + sy;
+                  if (targetY < 0 || targetY + bH > h) continue;
+
+                  for (let sx = cDx - 4; sx <= cDx + 4; sx += 1) {
+                    const targetX = bx + sx;
+                    if (targetX < 0 || targetX + bW > w) continue;
+
+                    let sad = 0;
+                    for (let dy = 0; dy < bH; dy += 4) {
+                      const currRow = (by + dy) * w + bx;
+                      const prevRow = (targetY + dy) * w + targetX;
+                      for (let dx = 0; dx < bW; dx += 4) {
+                        sad += Math.abs(this.currLuma[currRow + dx] - this.prevLuma[prevRow + dx]);
+                      }
+                    }
+
+                    if (sad < minSad) {
+                      minSad = sad;
+                      bestDx = sx;
+                      bestDy = sy;
+                    }
+                  }
+                }
+
+                // Displace pixels along motion vectors (The Datamosh Smear & Bloom)
                 if (bestDx !== 0 || bestDy !== 0) {
-                  const mvX = Math.round(bestDx * mult);
-                  const mvY = Math.round(bestDy * mult);
+                  const effMult = isBloom ? mult * 1.35 : mult;
+                  const mvX = Math.round(bestDx * effMult);
+                  const mvY = Math.round(bestDy * effMult);
 
-                  const srcX = Math.max(0, Math.min(w - bW, bx - mvX));
-                  const srcY = Math.max(0, Math.min(h - bH, by - mvY));
+                  const srcX = Math.max(0, Math.min(w - bW, bx + mvX));
+                  const srcY = Math.max(0, Math.min(h - bH, by + mvY));
 
-                  for (let py = 0; py < bH; py++) {
-                    const destRow = (by + py) * w + bx;
-                    const srcRow = (srcY + py) * w + srcX;
-                    for (let px = 0; px < bW; px++) {
-                      nextBuffer[destRow + px] = prevBuffer[srcRow + px];
+                  if (isChroma && (Math.abs(bestDx) > 1 || Math.abs(bestDy) > 1)) {
+                    // Chromatic aberration / color drift: Red displaced slightly ahead, Blue slightly trailing
+                    const srcXR = Math.max(0, Math.min(w - bW, bx + Math.round(mvX * 1.08) + 1));
+                    const srcXB = Math.max(0, Math.min(w - bW, bx + Math.round(mvX * 0.92) - 1));
+
+                    for (let py = 0; py < bH; py++) {
+                      const destRow = (by + py) * w + bx;
+                      const srcRow = (srcY + py) * w + srcX;
+                      const srcRowR = (srcY + py) * w + srcXR;
+                      const srcRowB = (srcY + py) * w + srcXB;
+
+                      for (let px = 0; px < bW; px++) {
+                        const pG = prevBuffer[srcRow + px];
+                        const pR = prevBuffer[srcRowR + px];
+                        const pB = prevBuffer[srcRowB + px];
+                        nextBuffer[destRow + px] = (0xFF << 24) | (pB & 0x00FF0000) | (pG & 0x0000FF00) | (pR & 0x000000FF);
+                      }
+                    }
+                  } else {
+                    // Standard macroblock vector smear
+                    for (let py = 0; py < bH; py++) {
+                      const destRow = (by + py) * w + bx;
+                      const srcRow = (srcY + py) * w + srcX;
+                      for (let px = 0; px < bW; px++) {
+                        nextBuffer[destRow + px] = prevBuffer[srcRow + px];
+                      }
                     }
                   }
                 }
               }
             }
 
+            // CRITICAL: Propagate modified nextBuffer back to moshImgData buffer
+            new Uint32Array(moshImgData.data.buffer).set(nextBuffer);
             this.moshCtx.putImageData(moshImgData, 0, 0);
             this.prevLuma.set(this.currLuma);
           }
 
           // Export current mosh frame as ArrayBuffer
           async exportFrameBuffer() {
-            const blob = await new Promise(resolve => this.moshCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+            const blob = await new Promise(resolve => this.moshCanvas.toBlob(resolve, 'image/jpeg', 0.88));
             return new Uint8Array(await blob.arrayBuffer());
           }
 
@@ -1797,9 +1890,9 @@
         async function seekVideo(video, time) {
           if (!video) return;
           const dur = (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.videoDuration || 10);
-          const targetTime = Math.max(0, Math.min(time, dur - 0.03));
+          const targetTime = Math.max(0, Math.min(time, dur - 0.02));
 
-          if (Math.abs(video.currentTime - targetTime) < 0.04) {
+          if (Math.abs(video.currentTime - targetTime) < 0.01) {
             return;
           }
 
@@ -1948,48 +2041,81 @@
             liveMoshCanvas.height = targetHeight;
 
             const moshEngine = new DatamoshVectorEngine(targetWidth, targetHeight, {
-              smearMultiplier: state.smearMultiplier
+              smearMultiplier: state.smearMultiplier,
+              flavor: state.datamoshFlavor
             });
 
             // 3. Glitch Interval Calculator
             let keyframeInterval;
             if (state.glitchFrequency === 0) {
-              keyframeInterval = totalFrames + 9999; // Never inject after frame 0
+              keyframeInterval = 999999;
+            } else if (state.glitchFrequency < 25) {
+              keyframeInterval = Math.round(90 * Math.pow(1 - state.glitchFrequency / 100, 1.5) + 30);
+            } else if (state.glitchFrequency < 65) {
+              keyframeInterval = Math.round(70 * Math.pow(1 - state.glitchFrequency / 100, 1.5) + 15);
             } else {
-              keyframeInterval = Math.max(8, Math.round(120 * Math.pow(1 - state.glitchFrequency / 100, 1.4) + 10));
+              keyframeInterval = Math.max(6, Math.round(30 * Math.pow(1 - state.glitchFrequency / 100, 1.5) + 5));
             }
 
-            let lastKeyframeIndex = -9999;
+            let lastKeyframeIndex = 0;
             let imageIndex = 0;
             const writtenFrameFiles = [];
             const collectedFrameBuffers = [];
 
             // 4. Sequential Frame Moshing Loop
-            progressPhaseLabel.textContent = `Moshing ${totalFrames} frames to match audio duration (${audioDuration.toFixed(1)}s)...`;
+            progressPhaseLabel.textContent = `Moshing ${totalFrames} frames with motion vectors...`;
 
             for (let i = 0; i < totalFrames; i++) {
               const videoTime = (i / fps) % state.videoDuration;
+              const isInitialFrame = (i === 0);
+              const isKeyframeTrigger = !isInitialFrame && ((i - lastKeyframeIndex) >= keyframeInterval);
 
-              // Extract motion frame
-              if (state.syntheticMotionRenderer) {
-                state.syntheticMotionRenderer(moshEngine.videoCtx, targetWidth, targetHeight, videoTime);
-                moshEngine.processPFrame(null);
-              } else {
-                await seekVideo(state.videoElement, videoTime);
-                moshEngine.processPFrame(state.videoElement);
-              }
+              if (isInitialFrame) {
+                // Keyframe 0: Inject starting still image
+                const img = state.stillImages[imageIndex % state.stillImages.length];
+                imageIndex++;
+                lastKeyframeIndex = 0;
+                moshEngine.injectKeyframe(img);
 
-              // Check if we should inject an image as an I-frame keyframe
-              const shouldInject = (i === 0) || ((i - lastKeyframeIndex) >= keyframeInterval && Math.random() < 0.85);
+                // Prime video reference frame at t=0
+                if (state.syntheticMotionRenderer) {
+                  state.syntheticMotionRenderer(moshEngine.videoCtx, targetWidth, targetHeight, 0);
+                  moshEngine.initReferenceLuma(null);
+                } else {
+                  await seekVideo(state.videoElement, 0);
+                  moshEngine.initReferenceLuma(state.videoElement);
+                }
 
-              if (shouldInject) {
+                canvasStatusCaption.textContent = `Frame 1/${totalFrames} • INJECTED INITIAL KEYFRAME #1`;
+              } else if (isKeyframeTrigger) {
+                // Keyframe Trigger: Cut to next image and reset reference
                 const img = state.stillImages[imageIndex % state.stillImages.length];
                 imageIndex++;
                 lastKeyframeIndex = i;
                 moshEngine.injectKeyframe(img);
-                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • INJECTING KEYFRAME #${imageIndex}`;
+
+                // Reset video reference luma to current video timestamp
+                if (state.syntheticMotionRenderer) {
+                  state.syntheticMotionRenderer(moshEngine.videoCtx, targetWidth, targetHeight, videoTime);
+                  moshEngine.initReferenceLuma(null);
+                } else {
+                  await seekVideo(state.videoElement, videoTime);
+                  moshEngine.initReferenceLuma(state.videoElement);
+                }
+
+                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • INJECTED KEYFRAME #${imageIndex}`;
               } else {
-                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • FORCING P-FRAME MOTION VECTOR SMEAR`;
+                // P-Frame: Extract video motion and smear current mosh image
+                if (state.syntheticMotionRenderer) {
+                  state.syntheticMotionRenderer(moshEngine.videoCtx, targetWidth, targetHeight, videoTime);
+                  moshEngine.processPFrame(null);
+                } else {
+                  await seekVideo(state.videoElement, videoTime);
+                  moshEngine.processPFrame(state.videoElement);
+                }
+
+                const smearDurationSec = ((i - lastKeyframeIndex) / fps).toFixed(1);
+                canvasStatusCaption.textContent = `Frame ${i + 1}/${totalFrames} • MOTION VECTOR SMEAR (${smearDurationSec}s melt)`;
               }
 
               // Update Live Viewport
